@@ -1,0 +1,18 @@
+[package]
+name = "executor-local"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Local executor for the OpenClaw coding agent"
+
+[dependencies]
+executor-core.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+tracing.workspace = true
+async-trait.workspace = true
