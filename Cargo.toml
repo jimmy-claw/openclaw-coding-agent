@@ -1,0 +1,35 @@
+[workspace]
+members = [
+    "crates/executor-core",
+    "crates/executor-ssh",
+    "crates/executor-container",
+    "crates/executor-local",
+    "crates/executor-cli",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+executor-core = { path = "crates/executor-core" }
+executor-ssh = { path = "crates/executor-ssh" }
+executor-container = { path = "crates/executor-container" }
+executor-local = { path = "crates/executor-local" }
+
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+tokio = { version = "1", features = ["full"] }
+ssh2 = "0.9"
+clap = { version = "4", features = ["derive"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+dirs = "6"
+async-trait = "0.1"
