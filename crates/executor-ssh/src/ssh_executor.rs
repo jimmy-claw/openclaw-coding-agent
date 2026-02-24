@@ -121,32 +121,35 @@ impl Executor for SshExecutor {
         let task_dir = self.remote_task_dir(&task_id);
         self.exec_remote(&sess, &format!("mkdir -p {}", task_dir))?;
 
-        // Build the claude command
+        // Build the claude command arguments
         let claude_bin = self.config.claude_binary();
-        let mut cmd_parts = vec![
-            format!("cd {}", request.workspace.as_deref().unwrap_or("~")),
-            "&&".to_string(),
-            format!(
-                "nohup {} --print --output-format json -p {}",
-                claude_bin,
-                shell_escape(&request.prompt)
-            ),
-        ];
+        let workspace = request.workspace.as_deref().unwrap_or("~");
+        let log_file = format!("{}/claude.log", task_dir);
+        let pid_file = format!("{}/claude.pid", task_dir);
+        let exit_file = format!("{}/claude.exitcode", task_dir);
+
+        // Build the inner claude invocation (without nohup/background)
+        let mut claude_args = format!(
+            "{} --print --output-format json -p {}",
+            claude_bin,
+            shell_escape(&request.prompt)
+        );
 
         if let Some(max_turns) = request.max_turns {
-            cmd_parts.push(format!("--max-turns {}", max_turns));
+            claude_args.push_str(&format!(" --max-turns {}", max_turns));
         }
 
         for tool in &request.allowed_tools {
-            cmd_parts.push(format!("--allowedTools {}", shell_escape(tool)));
+            claude_args.push_str(&format!(" --allowedTools {}", shell_escape(tool)));
         }
 
-        // Redirect output to log file, run in background
-        let log_file = format!("{}/claude.log", task_dir);
-        let pid_file = format!("{}/claude.pid", task_dir);
-        cmd_parts.push(format!("> {} 2>&1 & echo $! > {}", log_file, pid_file));
+        // Wrap in a subshell that writes exit code, run in background
+        // Pattern: ( cd <dir> && claude ... > log 2>&1; echo $? > exitcode ) & echo $! > pid
+        let full_cmd = format!(
+            "( cd {} && {} > {} 2>&1; echo $? > {} ) & echo $! > {}",
+            workspace, claude_args, log_file, exit_file, pid_file
+        );
 
-        let full_cmd = cmd_parts.join(" ");
         info!("Starting task {} on {}: {}", task_id, self.name(), full_cmd);
         self.exec_remote(&sess, &full_cmd)?;
 
@@ -209,11 +212,13 @@ impl Executor for SshExecutor {
                 let check = check.trim();
 
                 if check == "stopped" {
-                    // Process finished, check exit code
+                    // Process finished — read exit code from file written by the subshell wrapper
+                    let task_dir = self.remote_task_dir(task_id);
+                    let exit_file = format!("{}/claude.exitcode", task_dir);
                     let exit_output = self
-                        .exec_remote(&sess, &format!("wait {} 2>/dev/null; echo $?", pid))
-                        .unwrap_or_else(|_| "1".to_string());
-                    let exit_code: i32 = exit_output.trim().parse().unwrap_or(1);
+                        .exec_remote(&sess, &format!("cat {} 2>/dev/null || echo 0", exit_file))
+                        .unwrap_or_else(|_| "0".to_string());
+                    let exit_code: i32 = exit_output.trim().parse().unwrap_or(0);
                     meta.mark_completed(exit_code);
 
                     // Update local metadata
