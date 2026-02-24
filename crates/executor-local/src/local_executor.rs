@@ -61,9 +61,19 @@ impl Executor for LocalExecutor {
         }
 
         let workspace = request.workspace.as_deref().unwrap_or(".");
+
+        // Build env var prefix from config.env (exported before the command)
+        let env_prefix: String = self
+            .config
+            .env
+            .iter()
+            .map(|(k, v)| format!("{}='{}' ", k, v.replace('\'', "'\\''")))
+            .collect();
+
         let shell_cmd = format!(
-            "cd {} && nohup {} > {} 2>&1 & echo $! > {}",
+            "cd {} && nohup {}{}> {} 2>&1 & echo $! > {}",
             shell_escape(workspace),
+            env_prefix,
             claude_args,
             log_file.display(),
             pid_file.display(),
