@@ -3,13 +3,18 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+fn default_task_type() -> String {
+    "claude_code".to_string()
+}
+
 /// Task metadata stored as .meta.json alongside task artifacts.
-/// Covers GitHub issue #3: Task metadata system.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskMetadata {
     pub task_id: TaskId,
     pub executor_name: String,
     pub executor_type: String,
+    #[serde(default = "default_task_type")]
+    pub task_type: String,
     pub pid: Option<u32>,
     pub status: TaskStatus,
     pub prompt: String,
@@ -26,6 +31,7 @@ impl TaskMetadata {
         task_id: TaskId,
         executor_name: String,
         executor_type: String,
+        task_type: String,
         prompt: String,
         workspace: Option<String>,
     ) -> Self {
@@ -34,6 +40,7 @@ impl TaskMetadata {
             task_id,
             executor_name,
             executor_type,
+            task_type,
             pid: None,
             status: TaskStatus::Starting,
             prompt,
@@ -94,12 +101,13 @@ impl TaskMetadata {
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
     }
 
-    /// Produce structured JSON for dashboard integration (issue #4).
+    /// Produce structured JSON for dashboard integration.
     pub fn to_dashboard_json(&self) -> serde_json::Value {
         serde_json::json!({
             "task_id": self.task_id.0,
             "executor": self.executor_name,
             "executor_type": self.executor_type,
+            "task_type": self.task_type,
             "status": self.status,
             "pid": self.pid,
             "started_at": self.started_at.to_rfc3339(),
@@ -110,9 +118,17 @@ impl TaskMetadata {
         })
     }
 
-    /// Produce a JSONL line for dashboard streaming (issue #4).
+    /// Produce a JSONL line for dashboard streaming.
     pub fn to_jsonl_line(&self) -> String {
         serde_json::to_string(&self.to_dashboard_json()).unwrap_or_default()
+    }
+
+    /// Icon for display based on task type.
+    pub fn task_icon(&self) -> &str {
+        match self.task_type.as_str() {
+            "shell_command" => "\u{2699}\u{FE0F}",
+            _ => "\u{1F916}",
+        }
     }
 }
 

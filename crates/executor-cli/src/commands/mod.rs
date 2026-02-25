@@ -5,5 +5,6 @@ pub mod executors;
 pub mod kill;
 pub mod list;
 pub mod logs;
+pub mod run;
 pub mod start;
 pub mod status;

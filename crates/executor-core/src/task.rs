@@ -26,12 +26,51 @@ impl Default for TaskId {
     }
 }
 
+/// Payload type: either a Claude Code prompt or an arbitrary shell command.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum TaskPayload {
+    ClaudeCode {
+        prompt: String,
+        max_turns: Option<u32>,
+        #[serde(default)]
+        allowed_tools: Vec<String>,
+    },
+    ShellCommand {
+        command: String,
+    },
+}
+
+impl TaskPayload {
+    /// Human-readable description (the prompt or command).
+    pub fn description(&self) -> &str {
+        match self {
+            TaskPayload::ClaudeCode { prompt, .. } => prompt,
+            TaskPayload::ShellCommand { command } => command,
+        }
+    }
+
+    /// Type identifier string.
+    pub fn type_str(&self) -> &str {
+        match self {
+            TaskPayload::ClaudeCode { .. } => "claude_code",
+            TaskPayload::ShellCommand { .. } => "shell_command",
+        }
+    }
+
+    /// Icon for display.
+    pub fn icon(&self) -> &str {
+        match self {
+            TaskPayload::ClaudeCode { .. } => "\u{1F916}",
+            TaskPayload::ShellCommand { .. } => "\u{2699}\u{FE0F}",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskRequest {
-    pub prompt: String,
+    pub payload: TaskPayload,
     pub workspace: Option<String>,
-    pub max_turns: Option<u32>,
-    pub allowed_tools: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -43,6 +82,12 @@ pub enum TaskStatus {
     Failed,
     Killed,
     Unknown,
+}
+
+impl TaskStatus {
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Killed)
+    }
 }
 
 impl fmt::Display for TaskStatus {

@@ -25,7 +25,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Start a new coding task on an executor
+    /// Start a new Claude Code task on an executor
     Start {
         /// Executor name (from config)
         #[arg(long, short)]
@@ -46,6 +46,21 @@ enum Commands {
         /// Allowed tools (can be repeated)
         #[arg(long)]
         allowed_tools: Vec<String>,
+    },
+
+    /// Run an arbitrary shell command on an executor
+    Run {
+        /// Executor name (from config)
+        #[arg(long, short)]
+        executor: String,
+
+        /// Shell command to execute
+        #[arg(long, short)]
+        cmd: String,
+
+        /// Workspace directory on the executor
+        #[arg(long, short)]
+        workspace: Option<String>,
     },
 
     /// Check status of a task
@@ -125,7 +140,7 @@ enum Commands {
         init: bool,
     },
 
-    /// Output task status as structured JSON for dashboards (issue #4)
+    /// Output task status as structured JSON for dashboards
     Dashboard {
         /// Stream mode: output JSONL for all tasks, then exit
         #[arg(long)]
@@ -170,6 +185,11 @@ async fn main() -> anyhow::Result<()> {
             commands::start::run(&config, &executor, prompt, workspace, max_turns, allowed_tools)
                 .await
         }
+        Commands::Run {
+            executor,
+            cmd,
+            workspace,
+        } => commands::run::run(&config, &executor, cmd, workspace).await,
         Commands::Status { task_id, json } => {
             commands::status::run(&config, &task_id, json).await
         }

@@ -1,6 +1,6 @@
 # OpenClaw Coding Agent — Executor Framework
 
-A pluggable executor framework for AI coding agents. Dispatch Claude Code tasks to remote SSH hosts, Docker containers, or local execution — then monitor, fetch logs, and manage them from one CLI.
+A pluggable executor framework for AI coding agents. Dispatch Claude Code tasks **or arbitrary shell commands** to remote SSH hosts, Docker containers, or local execution — then monitor, fetch logs, and manage them from one CLI.
 
 ## Installation
 
@@ -45,6 +45,7 @@ executors:
 defaults:
   max_turns: 100
   claude_path: claude
+  webhook_url: https://example.com/webhook  # optional: POST completion JSON here
 ```
 
 Or generate a sample config:
@@ -55,7 +56,7 @@ openclaw-agent config --init
 
 ## Usage
 
-### Start a task
+### Start a Claude Code task
 
 ```bash
 # Run on SSH host
@@ -73,6 +74,23 @@ openclaw-agent start --executor crib \
   --workspace ~/myapp \
   --max-turns 150
 ```
+
+### Run a shell command
+
+Run arbitrary shell commands on any executor backend (not just Claude):
+
+```bash
+# Build and test on remote host
+openclaw-agent run --executor crib --cmd "make build && make test" --workspace ~/myproject
+
+# Run a script locally
+openclaw-agent run --executor local --cmd "./deploy.sh staging" --workspace ~/myapp
+
+# Run in container
+openclaw-agent run --executor builder --cmd "cargo test --release" --workspace /work/myproject
+```
+
+The `list` output shows task type icons: `🤖` for Claude Code, `⚙️` for shell commands.
 
 ### Monitor a task
 
@@ -179,18 +197,51 @@ openclaw-agent executors --json
 | `executor-local` | Local process executor |
 | `executor-cli` | Clap-based CLI binary |
 
+### Task Types
+
+Two payload types are supported:
+
+| Type | CLI Command | Icon | Description |
+|---|---|---|---|
+| `claude_code` | `start` | 🤖 | Runs Claude Code with a prompt |
+| `shell_command` | `run` | ⚙️ | Runs an arbitrary shell command |
+
+Both types work on all executor backends (SSH, container, local).
+
 ### Task Metadata
 
 Each task writes a `.meta.json` file tracking:
 - Task ID (UUID)
 - Executor name + type
+- Task type (`claude_code` or `shell_command`)
 - PID
 - Status (pending / running / completed / failed / killed)
 - Start/end timestamps
 - Workspace path
-- Prompt
+- Prompt / command
 
 SSH executor stores metadata at `/tmp/openclaw-tasks/<task-id>/` on the remote host, and mirrors it locally at `~/.local/share/openclaw/tasks/`.
+
+### Completion Callbacks
+
+When a task finishes (success, failure, or kill), a completion record is written to:
+
+```
+~/.openclaw-agent/completions/<task-id>.json
+```
+
+Format:
+```json
+{
+  "task_id": "...",
+  "status": "success|failure",
+  "exit_code": 0,
+  "completed_at": "2025-01-15T10:30:00Z",
+  "executor": "crib"
+}
+```
+
+If `webhook_url` is set in config `defaults`, the completion JSON is also POSTed there via `curl`.
 
 ## How SSH Execution Works
 

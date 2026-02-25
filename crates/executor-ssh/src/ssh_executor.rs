@@ -1,7 +1,7 @@
 use executor_core::config::ExecutorConfig;
 use executor_core::error::ExecutorError;
 use executor_core::metadata::{metadata_dir, TaskMetadata};
-use executor_core::task::{TaskId, TaskRequest, TaskStatus};
+use executor_core::task::{TaskId, TaskPayload, TaskRequest, TaskStatus};
 use executor_core::Executor;
 use ssh2::Session;
 use std::io::Read;
@@ -9,8 +9,8 @@ use std::net::TcpStream;
 use std::path::PathBuf;
 use tracing::{debug, info, warn};
 
-/// SSH executor: connects to a remote host, runs `claude` via nohup,
-/// tracks PID, and tails logs. Covers GitHub issue #1.
+/// SSH executor: connects to a remote host, runs claude or shell commands
+/// via nohup, tracks PID, and tails logs.
 pub struct SshExecutor {
     config: ExecutorConfig,
 }
@@ -121,33 +121,44 @@ impl Executor for SshExecutor {
         let task_dir = self.remote_task_dir(&task_id);
         self.exec_remote(&sess, &format!("mkdir -p {}", task_dir))?;
 
-        // Build the claude command arguments
-        let claude_bin = self.config.claude_binary();
         let workspace = request.workspace.as_deref().unwrap_or("~");
         let log_file = format!("{}/claude.log", task_dir);
         let pid_file = format!("{}/claude.pid", task_dir);
         let exit_file = format!("{}/claude.exitcode", task_dir);
 
-        // Build the inner claude invocation (without nohup/background)
-        let mut claude_args = format!(
-            "{} --print --output-format json -p {}",
-            claude_bin,
-            shell_escape(&request.prompt)
-        );
+        // Build the inner command based on payload type, then wrap in a subshell
+        // that writes exit code: ( cd <dir> && <cmd> > log 2>&1; echo $? > exitcode ) & echo $! > pid
+        let inner_cmd = match &request.payload {
+            TaskPayload::ClaudeCode {
+                prompt,
+                max_turns,
+                allowed_tools,
+            } => {
+                let claude_bin = self.config.claude_binary();
+                let mut claude_args = format!(
+                    "{} --print --output-format json -p {}",
+                    claude_bin,
+                    shell_escape(prompt)
+                );
 
-        if let Some(max_turns) = request.max_turns {
-            claude_args.push_str(&format!(" --max-turns {}", max_turns));
-        }
+                if let Some(turns) = max_turns {
+                    claude_args.push_str(&format!(" --max-turns {}", turns));
+                }
 
-        for tool in &request.allowed_tools {
-            claude_args.push_str(&format!(" --allowedTools {}", shell_escape(tool)));
-        }
+                for tool in allowed_tools {
+                    claude_args.push_str(&format!(" --allowedTools {}", shell_escape(tool)));
+                }
 
-        // Wrap in a subshell that writes exit code, run in background
-        // Pattern: ( cd <dir> && claude ... > log 2>&1; echo $? > exitcode ) & echo $! > pid
+                claude_args
+            }
+            TaskPayload::ShellCommand { command } => {
+                format!("sh -c {}", shell_escape(command))
+            }
+        };
+
         let full_cmd = format!(
             "( cd {} && {} > {} 2>&1; echo $? > {} ) & echo $! > {}",
-            workspace, claude_args, log_file, exit_file, pid_file
+            workspace, inner_cmd, log_file, exit_file, pid_file
         );
 
         info!("Starting task {} on {}: {}", task_id, self.name(), full_cmd);
@@ -169,7 +180,8 @@ impl Executor for SshExecutor {
             task_id.clone(),
             self.config.name.clone(),
             "ssh".to_string(),
-            request.prompt,
+            request.payload.type_str().to_string(),
+            request.payload.description().to_string(),
             request.workspace,
         );
         meta.mark_running(pid);

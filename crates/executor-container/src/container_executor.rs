@@ -1,14 +1,13 @@
 use executor_core::config::{ContainerRuntime, ExecutorConfig};
 use executor_core::error::ExecutorError;
 use executor_core::metadata::{metadata_dir, TaskMetadata};
-use executor_core::task::{TaskId, TaskRequest, TaskStatus};
+use executor_core::task::{TaskId, TaskPayload, TaskRequest, TaskStatus};
 use executor_core::Executor;
 use std::path::PathBuf;
 use tokio::process::Command;
 use tracing::{debug, info, warn};
 
-/// Container executor: runs claude in Docker/Podman containers.
-/// Covers GitHub issue #2.
+/// Container executor: runs claude or shell commands in Docker/Podman containers.
 pub struct ContainerExecutor {
     config: ExecutorConfig,
 }
@@ -81,8 +80,6 @@ impl Executor for ContainerExecutor {
             .as_deref()
             .ok_or_else(|| ExecutorError::Config("Container executor requires 'image'".into()))?;
 
-        let claude_bin = self.config.claude_binary();
-
         // Build docker/podman run command
         let mut args: Vec<String> = vec![
             "run".to_string(),
@@ -111,24 +108,38 @@ impl Executor for ContainerExecutor {
 
         args.push(image.to_string());
 
-        // Build the claude command inside the container
-        let mut claude_cmd = format!(
-            "{} --print --output-format json -p {}",
-            claude_bin,
-            shell_escape(&request.prompt)
-        );
+        // Build the command inside the container based on payload type
+        let inner_cmd = match &request.payload {
+            TaskPayload::ClaudeCode {
+                prompt,
+                max_turns,
+                allowed_tools,
+            } => {
+                let claude_bin = self.config.claude_binary();
+                let mut cmd = format!(
+                    "{} --print --output-format json -p {}",
+                    claude_bin,
+                    shell_escape(prompt)
+                );
 
-        if let Some(max_turns) = request.max_turns {
-            claude_cmd.push_str(&format!(" --max-turns {}", max_turns));
-        }
+                if let Some(turns) = max_turns {
+                    cmd.push_str(&format!(" --max-turns {}", turns));
+                }
 
-        for tool in &request.allowed_tools {
-            claude_cmd.push_str(&format!(" --allowedTools {}", shell_escape(tool)));
-        }
+                for tool in allowed_tools {
+                    cmd.push_str(&format!(" --allowedTools {}", shell_escape(tool)));
+                }
+
+                cmd
+            }
+            TaskPayload::ShellCommand { command } => {
+                command.clone()
+            }
+        };
 
         args.push("sh".to_string());
         args.push("-c".to_string());
-        args.push(claude_cmd);
+        args.push(inner_cmd);
 
         let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
         let container_id = self.run_cmd(&args_refs).await?;
@@ -149,7 +160,8 @@ impl Executor for ContainerExecutor {
             task_id.clone(),
             self.config.name.clone(),
             "container".to_string(),
-            request.prompt,
+            request.payload.type_str().to_string(),
+            request.payload.description().to_string(),
             request.workspace,
         );
         meta.mark_running(pid);

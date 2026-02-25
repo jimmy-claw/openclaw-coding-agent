@@ -1,13 +1,13 @@
 use executor_core::config::ExecutorConfig;
 use executor_core::error::ExecutorError;
 use executor_core::metadata::{metadata_dir, TaskMetadata};
-use executor_core::task::{TaskId, TaskRequest, TaskStatus};
+use executor_core::task::{TaskId, TaskPayload, TaskRequest, TaskStatus};
 use executor_core::Executor;
 use std::path::PathBuf;
 use tokio::process::Command;
 use tracing::{debug, info, warn};
 
-/// Local executor: runs claude directly on the host machine.
+/// Local executor: runs claude or shell commands directly on the host machine.
 pub struct LocalExecutor {
     config: ExecutorConfig,
 }
@@ -41,24 +41,8 @@ impl Executor for LocalExecutor {
         let task_dir = self.task_dir(&task_id);
         std::fs::create_dir_all(&task_dir)?;
 
-        let claude_bin = self.config.claude_binary();
         let log_file = task_dir.join("claude.log");
         let pid_file = task_dir.join("claude.pid");
-
-        // Build the command to run claude in background via nohup
-        let mut claude_args = format!(
-            "{} --print --output-format json -p {}",
-            claude_bin,
-            shell_escape(&request.prompt)
-        );
-
-        if let Some(max_turns) = request.max_turns {
-            claude_args.push_str(&format!(" --max-turns {}", max_turns));
-        }
-
-        for tool in &request.allowed_tools {
-            claude_args.push_str(&format!(" --allowedTools {}", shell_escape(tool)));
-        }
 
         let workspace = request.workspace.as_deref().unwrap_or(".");
 
@@ -70,14 +54,47 @@ impl Executor for LocalExecutor {
             .map(|(k, v)| format!("{}='{}' ", k, v.replace('\'', "'\\''")))
             .collect();
 
-        let shell_cmd = format!(
-            "cd {} && nohup {}{}> {} 2>&1 & echo $! > {}",
-            shell_escape(workspace),
-            env_prefix,
-            claude_args,
-            log_file.display(),
-            pid_file.display(),
-        );
+        let shell_cmd = match &request.payload {
+            TaskPayload::ClaudeCode {
+                prompt,
+                max_turns,
+                allowed_tools,
+            } => {
+                let claude_bin = self.config.claude_binary();
+                let mut claude_args = format!(
+                    "{} --print --output-format json -p {}",
+                    claude_bin,
+                    shell_escape(prompt)
+                );
+
+                if let Some(turns) = max_turns {
+                    claude_args.push_str(&format!(" --max-turns {}", turns));
+                }
+
+                for tool in allowed_tools {
+                    claude_args.push_str(&format!(" --allowedTools {}", shell_escape(tool)));
+                }
+
+                format!(
+                    "cd {} && nohup {}{}> {} 2>&1 & echo $! > {}",
+                    shell_escape(workspace),
+                    env_prefix,
+                    claude_args,
+                    log_file.display(),
+                    pid_file.display(),
+                )
+            }
+            TaskPayload::ShellCommand { command } => {
+                format!(
+                    "cd {} && nohup {}sh -c {} > {} 2>&1 & echo $! > {}",
+                    shell_escape(workspace),
+                    env_prefix,
+                    shell_escape(command),
+                    log_file.display(),
+                    pid_file.display(),
+                )
+            }
+        };
 
         debug!("Local exec: {}", shell_cmd);
 
@@ -103,7 +120,8 @@ impl Executor for LocalExecutor {
             task_id.clone(),
             self.config.name.clone(),
             "local".to_string(),
-            request.prompt,
+            request.payload.type_str().to_string(),
+            request.payload.description().to_string(),
             request.workspace,
         );
         meta.mark_running(pid);

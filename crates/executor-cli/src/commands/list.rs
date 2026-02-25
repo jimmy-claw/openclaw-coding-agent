@@ -19,7 +19,6 @@ pub async fn run(
     }
 
     if jsonl {
-        // JSONL output for dashboard streaming (issue #4)
         for task in &tasks {
             println!("{}", task.to_jsonl_line());
         }
@@ -32,13 +31,14 @@ pub async fn run(
             return Ok(());
         }
         println!(
-            "{:<38} {:<12} {:<12} {:<10} {:<8}",
-            "TASK ID", "EXECUTOR", "TYPE", "STATUS", "PID"
+            "{:<4} {:<38} {:<12} {:<12} {:<10} {:<8}",
+            "", "TASK ID", "EXECUTOR", "TYPE", "STATUS", "PID"
         );
-        println!("{}", "-".repeat(80));
+        println!("{}", "-".repeat(88));
         for task in &tasks {
             println!(
-                "{:<38} {:<12} {:<12} {:<10} {:<8}",
+                "{:<4} {:<38} {:<12} {:<12} {:<10} {:<8}",
+                task.task_icon(),
                 task.task_id,
                 task.executor_name,
                 task.executor_type,

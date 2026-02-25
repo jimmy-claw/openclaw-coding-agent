@@ -84,6 +84,8 @@ pub struct Defaults {
     pub max_turns: u32,
     #[serde(default = "default_claude_path")]
     pub claude_path: String,
+    #[serde(default)]
+    pub webhook_url: Option<String>,
 }
 
 impl Default for Defaults {
@@ -91,6 +93,7 @@ impl Default for Defaults {
         Self {
             max_turns: default_max_turns(),
             claude_path: default_claude_path(),
+            webhook_url: None,
         }
     }
 }

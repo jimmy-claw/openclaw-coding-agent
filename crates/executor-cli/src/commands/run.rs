@@ -5,25 +5,19 @@ use executor_core::task::{TaskPayload, TaskRequest};
 pub async fn run(
     config: &Config,
     executor_name: &str,
-    prompt: String,
+    cmd: String,
     workspace: Option<String>,
-    max_turns: Option<u32>,
-    allowed_tools: Vec<String>,
 ) -> anyhow::Result<()> {
     let executor = dispatch::create_executor(config, executor_name)?;
 
     let request = TaskRequest {
-        payload: TaskPayload::ClaudeCode {
-            prompt,
-            max_turns,
-            allowed_tools,
-        },
+        payload: TaskPayload::ShellCommand { command: cmd },
         workspace,
     };
 
     let meta = executor.start(request).await?;
 
-    println!("{} Task started:", meta.task_icon());
+    println!("{} Command started:", meta.task_icon());
     println!("  ID:       {}", meta.task_id);
     println!("  Type:     {}", meta.task_type);
     println!("  Executor: {} ({})", meta.executor_name, meta.executor_type);
