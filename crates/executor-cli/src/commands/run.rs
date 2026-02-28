@@ -13,6 +13,7 @@ pub async fn run(
     let request = TaskRequest {
         payload: TaskPayload::ShellCommand { command: cmd },
         workspace,
+        detach: false,
     };
 
     let meta = executor.start(request).await?;
