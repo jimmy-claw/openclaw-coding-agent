@@ -40,6 +40,26 @@ fn print_status(meta: &TaskMetadata) {
     println!("   Type:     {}", meta.task_type);
     println!("   Executor: {} ({})", meta.executor_name, meta.executor_type);
     println!("   Status:   {}", meta.status);
+    
+    // Show heartbeat info if available
+    if meta.status == executor_core::task::TaskStatus::Running {
+        if let Some(last_heartbeat) = meta.last_heartbeat {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            let seconds_ago = now - last_heartbeat;
+            let heartbeat_interval = meta.heartbeat_interval.unwrap_or(30);
+            let stale_after = heartbeat_interval * 10;
+            
+            if seconds_ago > stale_after {
+                println!("   ⚠️  HEARTBEAT STALE: {}s without update (threshold: {}s)", seconds_ago, stale_after);
+            } else {
+                println!("   ❤️  Heartbeat: {}s ago (interval: {}s)", seconds_ago, heartbeat_interval);
+            }
+        }
+    }
+    
     println!("   PID:      {}", meta.pid.map(|p| p.to_string()).unwrap_or_else(|| "N/A".into()));
     println!("   Started:  {}", meta.started_at);
     println!("   Updated:  {}", meta.updated_at);

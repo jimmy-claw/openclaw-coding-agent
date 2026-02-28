@@ -67,15 +67,6 @@ impl TaskPayload {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskRequest {
-    pub payload: TaskPayload,
-    pub workspace: Option<String>,
-    /// Fire-and-forget: return task ID immediately without waiting for PID.
-    #[serde(default)]
-    pub detach: bool,
-}
-
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskStatus {
@@ -84,12 +75,14 @@ pub enum TaskStatus {
     Completed,
     Failed,
     Killed,
+    #[serde(alias = "heartbeat_timeout")]
+    HeartbeatTimeout,
     Unknown,
 }
 
 impl TaskStatus {
     pub fn is_terminal(&self) -> bool {
-        matches!(self, TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Killed)
+        matches!(self, TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Killed | TaskStatus::HeartbeatTimeout)
     }
 }
 
@@ -101,6 +94,7 @@ impl fmt::Display for TaskStatus {
             TaskStatus::Completed => write!(f, "completed"),
             TaskStatus::Failed => write!(f, "failed"),
             TaskStatus::Killed => write!(f, "killed"),
+            TaskStatus::HeartbeatTimeout => write!(f, "heartbeat_timeout"),
             TaskStatus::Unknown => write!(f, "unknown"),
         }
     }

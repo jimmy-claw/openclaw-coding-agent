@@ -1,220 +1,104 @@
+use anyhow::Result;
+use clap::{Parser, Subcommand};
+
 mod commands;
 mod dispatch;
 
-use clap::{Parser, Subcommand};
-use tracing_subscriber::EnvFilter;
-
 #[derive(Parser)]
-#[command(
-    name = "openclaw-agent",
-    about = "OpenClaw Coding Agent — Executor Framework",
-    version
-)]
+#[command(name = "openclaw-agent")]
+#[command(about = "Manage coding agent tasks", long_about = None)]
 struct Cli {
-    /// Path to config file (default: ~/.config/openclaw/coding-agent.yaml)
-    #[arg(long, short)]
-    config: Option<String>,
-
-    /// Enable verbose logging
-    #[arg(long, short)]
-    verbose: bool,
-
     #[command(subcommand)]
     command: Commands,
 }
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Start a new Claude Code task on an executor
+    /// Start a new task
     Start {
-        /// Executor name (from config)
-        #[arg(long, short)]
+        /// Executor name (ssh, local, etc.)
         executor: String,
-
-        /// Task prompt
-        #[arg(long, short)]
-        prompt: String,
-
-        /// Workspace directory on the executor
-        #[arg(long, short)]
-        workspace: Option<String>,
-
-        /// Maximum turns for claude
-        #[arg(long)]
-        max_turns: Option<u32>,
-
-        /// Allowed tools (can be repeated)
-        #[arg(long)]
-        allowed_tools: Vec<String>,
-
-        /// Detach immediately after launching (fire-and-forget)
-        #[arg(long, short = 'd')]
+        
+        /// Task payload (prompt or command)
+        payload: String,
+        
+        /// Payload type: claude_code or shell_command
+        #[arg(short, long, default_value = "claude_code")]
+        type: String,
+        
+        /// Detach and return immediately
+        #[arg(short, long)]
         detach: bool,
     },
-
-    /// Run an arbitrary shell command on an executor
-    Run {
-        /// Executor name (from config)
-        #[arg(long, short)]
-        executor: String,
-
-        /// Shell command to execute
-        #[arg(long, short)]
-        cmd: String,
-
-        /// Workspace directory on the executor
-        #[arg(long, short)]
-        workspace: Option<String>,
-    },
-
-    /// Check status of a task
+    
+    /// Show task status
     Status {
         /// Task ID
-        #[arg(long, short)]
         task_id: String,
-
-        /// Output as JSON for dashboard integration
-        #[arg(long)]
+        
+        /// Output as JSON
+        #[arg(short, long)]
         json: bool,
     },
-
-    /// Fetch logs from a task
+    
+    /// Show task logs
     Logs {
         /// Task ID
-        #[arg(long, short)]
         task_id: String,
-
-        /// Number of lines to fetch
-        #[arg(long, short, default_value = "50")]
+        
+        /// Number of lines to show
+        #[arg(short, long, default_value = "50")]
         lines: usize,
-
-        /// Follow log output (poll every N seconds)
-        #[arg(long, short)]
-        follow: Option<u64>,
     },
-
+    
     /// Kill a running task
     Kill {
         /// Task ID
-        #[arg(long, short)]
         task_id: String,
     },
-
-    /// Cleanup task artifacts
+    
+    /// Clean up task artifacts
     Cleanup {
         /// Task ID
-        #[arg(long, short)]
         task_id: String,
     },
-
-    /// List all tasks (from local metadata)
-    List {
-        /// Output as JSON for dashboard integration
-        #[arg(long)]
-        json: bool,
-
-        /// Output as JSONL (one JSON object per line) for streaming
-        #[arg(long)]
-        jsonl: bool,
-
-        /// Filter by status
-        #[arg(long)]
-        status: Option<String>,
-
-        /// Filter by executor name
-        #[arg(long)]
-        executor: Option<String>,
-    },
-
-    /// List configured executors
-    Executors {
-        /// Output as JSON
-        #[arg(long)]
-        json: bool,
-    },
-
-    /// Show or initialize the config file
-    Config {
-        /// Print the default config path
-        #[arg(long)]
-        path: bool,
-
-        /// Initialize a sample config file
-        #[arg(long)]
-        init: bool,
-    },
-
-    /// Output task status as structured JSON for dashboards
-    Dashboard {
-        /// Stream mode: output JSONL for all tasks, then exit
-        #[arg(long)]
-        stream: bool,
-
-        /// Watch mode: poll every N seconds
-        #[arg(long)]
-        watch: Option<u64>,
-    },
+    
+    /// Cleanup stale tasks (no heartbeat for >5 min)
+    CleanupStale {},
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> Result<()> {
     let cli = Cli::parse();
-
-    // Init tracing
-    let filter = if cli.verbose {
-        "debug"
-    } else {
-        "info"
-    };
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::new(filter))
-        .with_target(false)
-        .init();
-
-    // Load config
-    let config = if let Some(ref path) = cli.config {
-        executor_core::Config::load_from(std::path::Path::new(path))?
-    } else {
-        executor_core::Config::load_default()?
-    };
-
+    
+    use Commands::*;
+    
     match cli.command {
-        Commands::Start {
-            executor,
-            prompt,
-            workspace,
-            max_turns,
-            allowed_tools,
-            detach,
-        } => {
-            commands::start::run(&config, &executor, prompt, workspace, max_turns, allowed_tools, detach)
-                .await
+        Start { executor, payload, type: payload_type, detach } => {
+            let config = commands::start::load_config()?;
+            commands::start::run(&config, &executor, &payload, &payload_type, detach).await?;
         }
-        Commands::Run {
-            executor,
-            cmd,
-            workspace,
-        } => commands::run::run(&config, &executor, cmd, workspace).await,
-        Commands::Status { task_id, json } => {
-            commands::status::run(&config, &task_id, json).await
+        Status { task_id, json } => {
+            let config = commands::start::load_config()?;
+            commands::status::run(&config, &task_id, json).await?;
         }
-        Commands::Logs {
-            task_id,
-            lines,
-            follow,
-        } => commands::logs::run(&config, &task_id, lines, follow).await,
-        Commands::Kill { task_id } => commands::kill::run(&config, &task_id).await,
-        Commands::Cleanup { task_id } => commands::cleanup::run(&config, &task_id).await,
-        Commands::List {
-            json,
-            jsonl,
-            status,
-            executor,
-        } => commands::list::run(json, jsonl, status, executor).await,
-        Commands::Executors { json } => commands::executors::run(&config, json).await,
-        Commands::Config { path, init } => commands::config::run(path, init).await,
-        Commands::Dashboard { stream, watch } => {
-            commands::dashboard::run(stream, watch).await
+        Logs { task_id, lines } => {
+            let config = commands::start::load_config()?;
+            commands::logs::run(&config, &task_id, lines).await?;
+        }
+        Kill { task_id } => {
+            let config = commands::start::load_config()?;
+            commands::kill::run(&config, &task_id).await?;
+        }
+        Cleanup { task_id } => {
+            let config = commands::start::load_config()?;
+            commands::cleanup::run(&config, &task_id).await?;
+        }
+        CleanupStale {} => {
+            let config = commands::start::load_config()?;
+            commands::cleanup_stale::run(&config).await?;
         }
     }
+    
+    Ok(())
 }

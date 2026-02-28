@@ -7,6 +7,10 @@ fn default_task_type() -> String {
     "claude_code".to_string()
 }
 
+fn default_heartbeat_interval() -> u64 {
+    30
+}
+
 /// Task metadata stored as .meta.json alongside task artifacts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskMetadata {
@@ -24,6 +28,9 @@ pub struct TaskMetadata {
     pub finished_at: Option<DateTime<Utc>>,
     pub exit_code: Option<i32>,
     pub error: Option<String>,
+    pub last_heartbeat: Option<u64>,
+    #[serde(default = "default_heartbeat_interval")]
+    pub heartbeat_interval: Option<u64>,
 }
 
 impl TaskMetadata {
@@ -50,6 +57,8 @@ impl TaskMetadata {
             finished_at: None,
             exit_code: None,
             error: None,
+            last_heartbeat: None,
+            heartbeat_interval: Some(default_heartbeat_interval()),
         }
     }
 
@@ -86,9 +95,19 @@ impl TaskMetadata {
         self.updated_at = now;
     }
 
+    pub fn mark_heartbeat(&mut self) {
+        self.last_heartbeat = Some(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+        );
+        self.updated_at = Utc::now();
+    }
+
     /// Write metadata to a .meta.json file in the given directory.
     pub fn write_to_dir(&self, dir: &Path) -> Result<(), std::io::Error> {
-        let path = dir.join(format!("{}.meta.json", self.task_id));
+        let path = dir.join(format!("{}.meta.json", self.task_id.0));
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
         std::fs::write(path, json)
@@ -115,6 +134,8 @@ impl TaskMetadata {
             "finished_at": self.finished_at.map(|t| t.to_rfc3339()),
             "exit_code": self.exit_code,
             "error": self.error,
+            "last_heartbeat": self.last_heartbeat,
+            "heartbeat_interval": self.heartbeat_interval,
         })
     }
 
@@ -162,4 +183,68 @@ pub fn list_all_metadata() -> Result<Vec<TaskMetadata>, std::io::Error> {
     }
     results.sort_by(|a, b| b.started_at.cmp(&a.started_at));
     Ok(results)
+}
+
+/// Clean up tasks that are stuck in Running state due to SSH disconnection
+/// (no heartbeat updates for > 5 minutes). Updates their status to HeartbeatTimeout.
+pub fn cleanup_stale_tasks() -> Result<Vec<TaskId>, std::io::Error> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    
+    let metadata_dir = metadata_dir();
+    if !metadata_dir.exists() {
+        return Ok(Vec::new());
+    }
+    
+    let mut stale_tasks = Vec::new();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    
+    for entry in std::fs::read_dir(metadata_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        
+        if !path.extension().is_some_and(|ext| ext == "json") {
+            continue;
+        }
+        
+        if path.file_name().is_some_and(|n| !n.to_string_lossy().ends_with(".meta.json")) {
+            continue;
+        }
+        
+        // Read metadata
+        let mut meta = match TaskMetadata::read_from_file(&path) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        
+        // Only check Running tasks with heartbeat interval set
+        if meta.status == executor_core::task::TaskStatus::Running {
+            if let Some(interval) = meta.heartbeat_interval {
+                let stale_after = interval * 10; // 10 intervals = 5 minutes
+                
+                // If no heartbeat recorded, or last heartbeat is stale
+                let is_stale = match meta.last_heartbeat {
+                    None => false, // Haven't started heartbeat yet
+                    Some(last_heartbeat) => now - last_heartbeat > stale_after,
+                };
+                
+                if is_stale {
+                    warn!("Marking task {} as heartbeat_timeout (stale for {}s)", meta.task_id, now - last_heartbeat.unwrap_or(now));
+                    meta.status = executor_core::task::TaskStatus::HeartbeatTimeout;
+                    meta.updated_at = Utc::now();
+                    
+                    if let Err(e) = meta.write_to_dir(&path.parent().unwrap()) {
+                        warn!("Failed to update task {}: {}", meta.task_id, e);
+                        continue;
+                    }
+                    
+                    stale_tasks.push(meta.task_id);
+                }
+            }
+        }
+    }
+    
+    Ok(stale_tasks)
 }

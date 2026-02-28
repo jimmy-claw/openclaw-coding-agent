@@ -1,10 +1,13 @@
 pub mod cleanup;
-pub mod config;
-pub mod dashboard;
-pub mod executors;
+pub mod cleanup_stale;
 pub mod kill;
-pub mod list;
 pub mod logs;
-pub mod run;
 pub mod start;
 pub mod status;
+
+pub use cleanup::run as cleanup;
+pub use cleanup_stale::run as cleanup_stale;
+pub use kill::run as kill;
+pub use logs::run as logs;
+pub use start::run as start;
+pub use status::run as status;

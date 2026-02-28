@@ -1,261 +1,156 @@
-# OpenClaw Coding Agent — Executor Framework
+# OpenClaw Coding Agent
 
-A pluggable executor framework for AI coding agents. Dispatch Claude Code tasks **or arbitrary shell commands** to remote SSH hosts, Docker containers, or local execution — then monitor, fetch logs, and manage them from one CLI.
+Automated coding agent executor framework for running Claude Code and shell commands on remote hosts.
+
+## Features
+
+- **Multi-Executor Support**: SSH, local, Docker, and cloud executors
+- **Detached Execution**: Fire-and-forget mode for long-running tasks
+- **Heartbeat Monitoring**: Auto-detect stuck tasks after SSH disconnection
+- **Dashboard Integration**: JSONL streaming for real-time status
+- **Completion Webhooks**: Notify external services on task completion
 
 ## Installation
 
 ```bash
+# Build from source
+git clone https://github.com/jimmy-claw/openclaw-coding-agent
+cd openclaw-coding-agent
 cargo build --release
-# Binary: target/release/openclaw-agent
+
+# Install
 cp target/release/openclaw-agent ~/.local/bin/
-```
-
-## Configuration
-
-Create `~/.config/openclaw/coding-agent.yaml`:
-
-```yaml
-executors:
-  - name: crib
-    type: ssh
-    host: 192.168.0.152
-    port: 22
-    user: jimmy
-    claude_path: /home/jimmy/.npm-global/bin/claude
-    labels:
-      - rust
-      - heavy-compute
-
-  - name: builder
-    type: container
-    image: claude-code:latest
-    runtime: docker   # or podman
-    volumes:
-      - /home/jimmy/repos:/work
-    labels:
-      - isolated
-      - reproducible
-
-  - name: local
-    type: local
-    labels:
-      - quick-tasks
-      - lightweight
-
-defaults:
-  max_turns: 100
-  claude_path: claude
-  webhook_url: https://example.com/webhook  # optional: POST completion JSON here
-```
-
-Or generate a sample config:
-
-```bash
-openclaw-agent config --init
+chmod +x ~/.local/bin/openclaw-agent
 ```
 
 ## Usage
 
-### Start a Claude Code task
+### Start a Task
 
 ```bash
-# Run on SSH host
-openclaw-agent start --executor crib --prompt "Fix the Nix build so nix build .#app works" --workspace ~/lez-hello-world
+# SSH executor (detached)
+openclaw-agent start ssh "Fix bug in module X" --detach
 
-# Run in Docker container
-openclaw-agent start --executor builder --prompt "Add error handling to the API" --workspace /work/myproject
+# Shell command
+openclaw-agent start ssh "cargo test" --type shell_command --detach
 
-# Run locally
-openclaw-agent start --executor local --prompt "Write tests for src/lib.rs" --workspace ~/myproject
-
-# With options
-openclaw-agent start --executor crib \
-  --prompt "Refactor the auth module" \
-  --workspace ~/myapp \
-  --max-turns 150
+# Local executor
+openclaw-agent start local "npm run build"
 ```
 
-### Run a shell command
-
-Run arbitrary shell commands on any executor backend (not just Claude):
+### Check Status
 
 ```bash
-# Build and test on remote host
-openclaw-agent run --executor crib --cmd "make build && make test" --workspace ~/myproject
+openclaw-agent status <task_id>
 
-# Run a script locally
-openclaw-agent run --executor local --cmd "./deploy.sh staging" --workspace ~/myapp
-
-# Run in container
-openclaw-agent run --executor builder --cmd "cargo test --release" --workspace /work/myproject
+# Output:
+# 🦞  Task:     abc-123
+#    Type:     claude_code
+#    Executor: crib (ssh)
+#    Status:   running
+#    ❤️  Heartbeat: 5s ago (interval: 30s)
+#    PID:      12345
+#    Started:  2026-02-28T21:00:00Z
+#    Updated:  2026-02-28T21:05:05Z
 ```
 
-The `list` output shows task type icons: `🤖` for Claude Code, `⚙️` for shell commands.
-
-### Monitor a task
+### View Logs
 
 ```bash
-# Check status
-openclaw-agent status --task-id <task-id>
-
-# JSON output (for scripting/dashboard)
-openclaw-agent status --task-id <task-id> --json
+openclaw-agent logs <task_id> --lines 100
 ```
 
-### Fetch logs
+### Kill a Task
 
 ```bash
-# Last 50 lines (default)
-openclaw-agent logs --task-id <task-id>
-
-# Last 100 lines
-openclaw-agent logs --task-id <task-id> --lines 100
-
-# Follow (poll every 5 seconds)
-openclaw-agent logs --task-id <task-id> --follow 5
+openclaw-agent kill <task_id>
 ```
 
-### List tasks
+### Cleanup Stale Tasks
 
 ```bash
-# All tasks
-openclaw-agent list
+# Manual cleanup
+openclaw-agent cleanup-stale
 
-# Filter by status
-openclaw-agent list --status running
-openclaw-agent list --status completed
-
-# Filter by executor
-openclaw-agent list --executor crib
-
-# JSON/JSONL output
-openclaw-agent list --json
-openclaw-agent list --jsonl
+# Auto-cleanup (cron runs every 2 min by default)
+# See: tasks/issue9-cron-setup.md
 ```
 
-### Kill a task
+### Clean Up Task Artifacts
 
 ```bash
-openclaw-agent kill --task-id <task-id>
+openclaw-agent cleanup <task_id>
 ```
 
-### Cleanup
+## Configuration
 
-```bash
-openclaw-agent cleanup --task-id <task-id>
+### Config File
+
+`~/.config/openclaw/coding-agent.yaml`:
+
+```yaml
+defaults:
+  executor: ssh
+  webhook_url: https://your-webhook-url.com/complete
+
+executors:
+  - name: crib
+    type: ssh
+    host: 192.168.0.152
+    user: jimmy
+    claude_binary: claude
+    key_path: ~/.ssh/id_ed25519
+
+  - name: local
+    type: local
+    claude_binary: claude
 ```
-
-### Dashboard
-
-```bash
-# Snapshot of all tasks as JSONL
-openclaw-agent dashboard --stream
-
-# Watch mode (refresh every 10 seconds)
-openclaw-agent dashboard --watch 10
-```
-
-### List configured executors
-
-```bash
-openclaw-agent executors
-openclaw-agent executors --json
-```
-
-## Architecture
-
-```
-┌─────────────────────────────────────────┐
-│         OpenClaw Agent (Brain)          │
-│  - Decides which executor to use        │
-│  - Monitors task progress               │
-│  - Fetches logs & activity              │
-└──────────────┬──────────────────────────┘
-               │
-    ┌──────────┼──────────┐
-    ▼          ▼          ▼
-┌───────┐ ┌─────────┐ ┌────────┐
-│  SSH  │ │Container│ │ Local  │
-│Executor│ │Executor │ │Executor│
-└───────┘ └─────────┘ └────────┘
-    │          │          │
-    ▼          ▼          ▼
-┌───────┐ ┌─────────┐ ┌────────┐
-│ Crib  │ │ Docker  │ │ Pi5    │
-│(remote│ │(isolated│ │(local  │
-│ host) │ │ builds) │ │ tasks) │
-└───────┘ └─────────┘ └────────┘
-```
-
-### Crates
-
-| Crate | Purpose |
-|---|---|
-| `executor-core` | Shared traits, types, config, metadata |
-| `executor-ssh` | SSH executor (ssh2 crate, nohup + PID tracking) |
-| `executor-container` | Docker/Podman executor |
-| `executor-local` | Local process executor |
-| `executor-cli` | Clap-based CLI binary |
-
-### Task Types
-
-Two payload types are supported:
-
-| Type | CLI Command | Icon | Description |
-|---|---|---|---|
-| `claude_code` | `start` | 🤖 | Runs Claude Code with a prompt |
-| `shell_command` | `run` | ⚙️ | Runs an arbitrary shell command |
-
-Both types work on all executor backends (SSH, container, local).
 
 ### Task Metadata
 
-Each task writes a `.meta.json` file tracking:
-- Task ID (UUID)
-- Executor name + type
-- Task type (`claude_code` or `shell_command`)
-- PID
-- Status (pending / running / completed / failed / killed)
-- Start/end timestamps
-- Workspace path
-- Prompt / command
+Each task creates:
+- `~/.openclaw-agent/tasks/<task_id>/`: Remote artifacts
+- `~/.openclaw-agent/tasks/<task_id>.meta.json`: Local metadata
 
-SSH executor stores metadata at `/tmp/openclaw-tasks/<task-id>/` on the remote host, and mirrors it locally at `~/.local/share/openclaw/tasks/`.
-
-### Completion Callbacks
-
-When a task finishes (success, failure, or kill), a completion record is written to:
-
-```
-~/.openclaw-agent/completions/<task-id>.json
-```
-
-Format:
+Metadata fields:
 ```json
 {
-  "task_id": "...",
-  "status": "success|failure",
-  "exit_code": 0,
-  "completed_at": "2025-01-15T10:30:00Z",
-  "executor": "crib"
+  "task_id": "abc-123",
+  "executor_name": "crib",
+  "executor_type": "ssh",
+  "task_type": "claude_code",
+  "pid": 12345,
+  "status": "running",
+  "prompt": "Fix bug in module X",
+  "workspace": "~",
+  "started_at": "2026-02-28T21:00:00Z",
+  "updated_at": "2026-02-28T21:05:05Z",
+  "finished_at": null,
+  "exit_code": null,
+  "error": null,
+  "last_heartbeat": 1740896705,
+  "heartbeat_interval": 30
 }
 ```
 
-If `webhook_url` is set in config `defaults`, the completion JSON is also POSTed there via `curl`.
+## Heartbeat Monitoring
 
-## How SSH Execution Works
+### How It Works
 
-1. Connect to remote host via SSH (key or agent auth)
-2. Create task directory at `/tmp/openclaw-tasks/<task-id>/`
-3. Launch: `nohup claude --dangerously-skip-permissions --max-turns N -p "..." > task.log 2>&1 &`
-4. Write PID to `task.pid`, metadata to `.meta.json`
-5. Log fetching reads `~/.claude/projects/` JSONL on the remote host
+1. **Task Launch**: Starts heartbeat script + main process
+2. **Heartbeat**: Writes `~/.openclaw-agent/tasks/<id>/heartbeat.json` every 30s
+3. **Status Check**: Reads heartbeat, detects staleness (>5min = 10 intervals)
+4. **Auto-Cleanup**: Cron job runs every 2min, fixes stuck tasks
 
-## References
+### Thresholds
 
-- [jimmy-tools](https://github.com/jimmy-claw/jimmy-tools) — Original shell script pattern this is based on
-- [logos-lez-multisig-module](https://github.com/jimmy-claw/logos-lez-multisig-module) — Production Nix example
+- **Heartbeat interval**: 30 seconds (default, configurable)
+- **Stale threshold**: 300 seconds (5 minutes = 10 intervals)
+- **Status when stale**: `heartbeat_timeout` (terminal state)
 
-## License
+### Manual Testing
 
-MIT
+```bash
+# Create artificial stale task
+cat > ~/.openclaw-agent/tasks/test-stale.meta.json << 'EOF'
+{"task_id":"test-123","executor_name":"crib","executor_type":"ssh","task_type":"claude_code","pid":9999,"status":"running","prompt":"test","workspace":"~","started_at":"2026-02-28T21:00:00Z","updated_at":"2026-02-28T21:00:00Z","finished_at":null,"exit_code":null,"error":null,"last_heartbeat":1709234567,"heartbeat_interval":30}

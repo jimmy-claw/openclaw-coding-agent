@@ -107,6 +107,42 @@ impl SshExecutor {
         Ok(())
     }
 
+    /// Generate heartbeat script for remote task
+    fn generate_heartbeat_script(task_id: &TaskId, interval: u64) -> String {
+        let task_dir = format!("/tmp/openclaw-tasks/{}", task_id);
+        let beat_file = format!("{}/heartbeat.json", task_dir);
+        
+        format!(
+            r#"#!/bin/bash
+BEAT_FILE="{beat_file}"
+mkdir -p "$(dirname "$BEAT_FILE")"
+while true; do
+    TIMESTAMP=$(date +%s)
+    echo "{{\"timestamp\":{{}}}}" | sed "s/{{}}/$TIMESTAMP/" > "$BEAT_FILE" 2>/dev/null || true
+    sleep {interval}
+done
+"#
+        )
+    }
+
+    /// Read heartbeat file from remote host
+    fn read_heartbeat(&self, sess: &Session, task_id: &TaskId) -> Result<Option<u64>, ExecutorError> {
+        let beat_file = format!("/tmp/openclaw-tasks/{}/heartbeat.json", task_id);
+        let output = self.exec_remote(sess, &format!("cat {} 2>/dev/null || echo ''", beat_file))?;
+        
+        // Extract timestamp from JSON: {"timestamp":1234567890}
+        if output.contains("timestamp") {
+            if let Some(ts) = output.split(':').nth(1) {
+                if let Some(ts_str) = ts.trim().split(',').next() {
+                    if let Ok(ts) = ts_str.trim().parse::<u64>() {
+                        return Ok(Some(ts));
+                    }
+                }
+            }
+        }
+        Ok(None)
+    }
+
     /// Remote directory for task metadata/logs.
     fn remote_task_dir(&self, task_id: &TaskId) -> String {
         format!("/tmp/openclaw-tasks/{}", task_id)
@@ -137,6 +173,11 @@ impl Executor for SshExecutor {
         let log_file = format!("{}/claude.log", task_dir);
         let pid_file = format!("{}/claude.pid", task_dir);
         let exit_file = format!("{}/claude.exitcode", task_dir);
+        let heartbeat_file = format!("{}/heartbeat.json", task_dir);
+        let heartbeat_pid_file = format!("{}/heartbeat.pid", task_dir);
+
+        // Get heartbeat interval from metadata defaults
+        let heartbeat_interval = 30u64; // Default 30 seconds
 
         // Build the inner command based on payload type
         let inner_cmd = match &request.payload {
@@ -168,18 +209,29 @@ impl Executor for SshExecutor {
         };
 
         if request.detach {
-            // Detach mode: single combined command, fire-and-forget.
-            // mkdir + nohup launch in one shot, don't wait for output.
+            // Detach mode: Launch heartbeat + main process in separate subshells
+            let heartbeat_script = Self::generate_heartbeat_script(&task_id, heartbeat_interval);
+            
+            // Write heartbeat script
+            self.exec_remote(
+                &sess,
+                &format!("cat > {}/heartbeat.sh << 'HBEAT'\n{}\nHBEAT && chmod +x {}/heartbeat.sh", task_dir, heartbeat_script, task_dir)
+            )?;
+
+            // Combined command: start heartbeat in background, then main process
             let full_cmd = format!(
-                "mkdir -p {} && ( cd {} && nohup {} > {} 2>&1; echo $? > {} ) & echo $! > {}",
-                task_dir, workspace, inner_cmd, log_file, exit_file, pid_file
+                "mkdir -p {} && \
+                 ( nohup bash {}/heartbeat.sh > {}/heartbeat.log 2>&1 & echo $! > {}/heartbeat.pid ) && \
+                 ( cd {} && nohup {} > {} 2>&1; echo $? > {} ) & echo $! > {}",
+                task_dir, task_dir, task_dir, task_dir, 
+                workspace, inner_cmd, log_file, exit_file, pid_file
             );
 
-            info!("Starting detached task {} on {}", task_id, self.name());
+            info!("Starting detached task {} with heartbeat on {}", task_id, self.name());
             self.exec_remote_fire_and_forget(&sess, &full_cmd)?;
 
-            // Write local metadata with Starting status (no PID yet)
-            let meta = TaskMetadata::new(
+            // Write local metadata with Starting status and heartbeat interval
+            let mut meta = TaskMetadata::new(
                 task_id.clone(),
                 self.config.name.clone(),
                 "ssh".to_string(),
@@ -187,6 +239,7 @@ impl Executor for SshExecutor {
                 request.payload.description().to_string(),
                 request.workspace,
             );
+            meta.heartbeat_interval = Some(heartbeat_interval);
 
             let local_dir = self.local_meta_dir();
             std::fs::create_dir_all(&local_dir)?;
@@ -197,8 +250,18 @@ impl Executor for SshExecutor {
             // Normal mode: full round-trip with PID readback and remote metadata
             self.exec_remote(&sess, &format!("mkdir -p {}", task_dir))?;
 
+            // Write heartbeat script
+            let heartbeat_script = Self::generate_heartbeat_script(&task_id, heartbeat_interval);
+            self.exec_remote(
+                &sess,
+                &format!("cat > {}/heartbeat.sh << 'HBEAT'\n{}\nHBEAT && chmod +x {}/heartbeat.sh", task_dir, heartbeat_script, task_dir)
+            )?;
+
+            // Combined command: start heartbeat + main process
             let full_cmd = format!(
-                "( cd {} && {} > {} 2>&1; echo $? > {} ) & echo $! > {}",
+                "( nohup bash {}/heartbeat.sh > {}/heartbeat.log 2>&1 & echo $! > {}/heartbeat.pid ) && \
+                 ( cd {} && {} > {} 2>&1; echo $? > {} ) & echo $! > {}",
+                task_dir, task_dir, task_dir,
                 workspace, inner_cmd, log_file, exit_file, pid_file
             );
 
@@ -226,6 +289,7 @@ impl Executor for SshExecutor {
                 request.workspace,
             );
             meta.mark_running(pid);
+            meta.heartbeat_interval = Some(heartbeat_interval);
 
             // Write .meta.json locally
             let local_dir = self.local_meta_dir();
@@ -276,15 +340,36 @@ impl Executor for SshExecutor {
 
         // Check if the process is still running on remote
         if meta.status == TaskStatus::Running {
+            let sess = self.connect()?;
+            
+            // First check heartbeat
+            if let Some(interval) = meta.heartbeat_interval {
+                if let Ok(Some(last_heartbeat)) = self.read_heartbeat(&sess, task_id) {
+                    meta.last_heartbeat = Some(last_heartbeat);
+                    
+                    // Check if heartbeat is stale (> 5 minutes = 10 intervals without update)
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs();
+                    
+                    if now - last_heartbeat > interval * 10 {
+                        warn!("Task {} heartbeat stale ({}s without update)", task_id, now - last_heartbeat);
+                        meta.status = TaskStatus::HeartbeatTimeout;
+                        meta.write_to_dir(&local_dir)?;
+                        return Ok(meta);
+                    }
+                }
+            }
+
+            // Then check if main process is running
             if let Some(pid) = meta.pid {
-                let sess = self.connect()?;
                 let check = self.exec_remote(&sess, &format!("kill -0 {} 2>/dev/null && echo running || echo stopped", pid))?;
                 let check = check.trim();
 
                 if check == "stopped" {
                     // Process finished — read exit code from file written by the subshell wrapper
-                    let task_dir = self.remote_task_dir(task_id);
-                    let exit_file = format!("{}/claude.exitcode", task_dir);
+                    let exit_file = format!("{}/claude.exitcode", self.remote_task_dir(task_id));
                     let exit_output = self
                         .exec_remote(&sess, &format!("cat {} 2>/dev/null || echo 0", exit_file))
                         .unwrap_or_else(|_| "0".to_string());
@@ -323,6 +408,16 @@ impl Executor for SshExecutor {
         if let Some(pid) = meta.pid {
             let sess = self.connect()?;
             warn!("Killing task {} (PID {}) on {}", task_id, pid, self.name());
+            
+            // Kill heartbeat process first
+            let heartbeat_pid_file = format!("{}/heartbeat.pid", self.remote_task_dir(task_id));
+            if let Ok(heartbeat_pid_str) = self.exec_remote(&sess, &format!("cat {} 2>/dev/null", heartbeat_pid_file)) {
+                if let Ok(heartbeat_pid) = heartbeat_pid_str.trim().parse::<u32>() {
+                    let _ = self.exec_remote(&sess, &format!("kill {} 2>/dev/null || true", heartbeat_pid));
+                }
+            }
+            
+            // Then kill main process
             self.exec_remote(&sess, &format!("kill {} 2>/dev/null || true", pid))?;
 
             meta.mark_killed();
