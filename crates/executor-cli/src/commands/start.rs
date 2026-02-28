@@ -9,6 +9,7 @@ pub async fn run(
     workspace: Option<String>,
     max_turns: Option<u32>,
     allowed_tools: Vec<String>,
+    detach: bool,
 ) -> anyhow::Result<()> {
     let executor = dispatch::create_executor(config, executor_name)?;
 
@@ -19,6 +20,7 @@ pub async fn run(
             allowed_tools,
         },
         workspace,
+        detach,
     };
 
     let meta = executor.start(request).await?;
@@ -29,6 +31,9 @@ pub async fn run(
     println!("  Executor: {} ({})", meta.executor_name, meta.executor_type);
     println!("  PID:      {}", meta.pid.map(|p| p.to_string()).unwrap_or_else(|| "N/A".into()));
     println!("  Status:   {}", meta.status);
+    if detach {
+        println!("  Mode:     detached (fire-and-forget)");
+    }
 
     Ok(())
 }

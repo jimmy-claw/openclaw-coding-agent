@@ -71,6 +71,9 @@ impl TaskPayload {
 pub struct TaskRequest {
     pub payload: TaskPayload,
     pub workspace: Option<String>,
+    /// Fire-and-forget: return task ID immediately without waiting for PID.
+    #[serde(default)]
+    pub detach: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

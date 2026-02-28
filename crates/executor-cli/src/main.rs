@@ -46,6 +46,10 @@ enum Commands {
         /// Allowed tools (can be repeated)
         #[arg(long)]
         allowed_tools: Vec<String>,
+
+        /// Detach immediately after launching (fire-and-forget)
+        #[arg(long, short = 'd')]
+        detach: bool,
     },
 
     /// Run an arbitrary shell command on an executor
@@ -181,8 +185,9 @@ async fn main() -> anyhow::Result<()> {
             workspace,
             max_turns,
             allowed_tools,
+            detach,
         } => {
-            commands::start::run(&config, &executor, prompt, workspace, max_turns, allowed_tools)
+            commands::start::run(&config, &executor, prompt, workspace, max_turns, allowed_tools, detach)
                 .await
         }
         Commands::Run {
