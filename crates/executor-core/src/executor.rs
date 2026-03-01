@@ -1,6 +1,6 @@
 use crate::error::ExecutorError;
 use crate::metadata::TaskMetadata;
-use crate::task::{TaskId, TaskRequest};
+use crate::task::TaskId;
 
 /// Core executor trait. Every executor type implements this.
 /// Maps to the interface described in the README:

@@ -7,8 +7,8 @@ fn default_task_type() -> String {
     "claude_code".to_string()
 }
 
-fn default_heartbeat_interval() -> u64 {
-    30
+fn default_heartbeat_interval() -> Option<u64> {
+    Some(30)
 }
 
 /// Task metadata stored as .meta.json alongside task artifacts.
@@ -58,7 +58,7 @@ impl TaskMetadata {
             exit_code: None,
             error: None,
             last_heartbeat: None,
-            heartbeat_interval: Some(default_heartbeat_interval()),
+            heartbeat_interval: Some(default_heartbeat_interval().unwrap_or(30)),
         }
     }
 
@@ -220,7 +220,7 @@ pub fn cleanup_stale_tasks() -> Result<Vec<TaskId>, std::io::Error> {
         };
         
         // Only check Running tasks with heartbeat interval set
-        if meta.status == executor_core::task::TaskStatus::Running {
+        if meta.status == TaskStatus::Running {
             if let Some(interval) = meta.heartbeat_interval {
                 let stale_after = interval * 10; // 10 intervals = 5 minutes
                 
@@ -231,12 +231,12 @@ pub fn cleanup_stale_tasks() -> Result<Vec<TaskId>, std::io::Error> {
                 };
                 
                 if is_stale {
-                    warn!("Marking task {} as heartbeat_timeout (stale for {}s)", meta.task_id, now - last_heartbeat.unwrap_or(now));
-                    meta.status = executor_core::task::TaskStatus::HeartbeatTimeout;
+                    eprintln!("Marking task {} as heartbeat_timeout (stale for {}s)", meta.task_id, now - meta.last_heartbeat.unwrap_or(now));
+                    meta.status = TaskStatus::HeartbeatTimeout;
                     meta.updated_at = Utc::now();
                     
                     if let Err(e) = meta.write_to_dir(&path.parent().unwrap()) {
-                        warn!("Failed to update task {}: {}", meta.task_id, e);
+                        eprintln!("Failed to update task {}: {}", meta.task_id, e);
                         continue;
                     }
                     
